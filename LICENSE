@@ -1,0 +1,20 @@
+SOFTWARE BETA-TESTING LICENSE AGREEMENT
+PROJECT: SENTINEL SHIELD V2.0
+COPYRIGHT (C) 2026. ALL RIGHTS RESERVED.
+
+1. PROPRIETARY RIGHTS & OWNERSHIP
+This software, including its source code ("the brain"), compiled binaries (.exe), assets (shield/logo graphics), and documentation, is the sole intellectual property of the Author. This is a proprietary, closed-source project. No ownership rights are transferred to the Tester under this Agreement.
+
+2. LICENSE GRANT & RESTRICTIONS
+The Author hereby grants the Tester a limited, non-exclusive, non-transferable, and revocable license to run and test the software strictly for evaluation and feedback purposes. The Tester explicitly agrees NOT to:
+   - Decompile, reverse-engineer, or attempt to extract the source code from the binary.
+   - Copy, modify, adapt, or create derivative works based on the software's logic or code.
+   - Distribute, share, publish, or leak the software or source code to any third party.
+
+3. CONFIDENTIALITY
+The software architecture, feature logic, and performance metrics are strictly confidential. The Tester shall not disclose any information regarding the software to the public or on unauthorized platforms without the prior written consent of the Author.
+
+4. TERMINATION
+This license automatically terminates upon the conclusion of the beta-testing period or at the sole discretion of the Author, at which point the Tester must immediately cease usage and delete all local copies of the executable and repository assets.
+
+BY DOWNLOADING, COMPILING, OR RUNNING THIS SOFTWARE, YOU AGREE TO BE BOUND BY THE TERMS OF THIS PROPRIETARY LICENSE.

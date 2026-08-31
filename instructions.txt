@@ -1,0 +1,5 @@
+Sentinel v2 – 48-Hour Stability Test Instructions
+
+1. Right-click 'Launch_Sentinel.bat' and select "Run as Administrator" (this ensures the low-level WMI and network sensors initialize with proper OS hooks).
+2. Open Windows Task Manager to confirm that 'sentinel_v2.exe' is processing cleanly in the background.
+3. Leave the background task active for 48 hours to confirm memory stability and log persistence under standard environment runtime states.
