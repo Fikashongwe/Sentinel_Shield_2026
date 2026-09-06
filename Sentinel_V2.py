@@ -1,15 +1,17 @@
+import os
+import json
 import logging
 import math
-import requests
 import psutil
-import wmi
+import requests
+import threading
+import time
+import urllib3
 import win32security
 from pathlib import Path
-import urllib3
-import json
+import wmi
 
 # Configure Webhook URL and Helper Function
-import os
 
 WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 def send_to_channel(channel_name, message):
@@ -36,32 +38,69 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(threadName)s: %(message)s',
     handlers=[
-        Logging.FileHandler("system_debug.log"),
-        Logging.StreamHandler()
-    ]
+    logging.FileHandler("system_debug.log"),
+    logging.StreamHandler()
+]
 )
 
 class SentinelV2Engine:
-    def __init__(self, target_dirs, slack_webhook_url=WEBHOOK_URL):
-        Self.target_dirs = [Path(d) for d in target_dirs]
-        Self.slack_webhook_url = slack_webhook_url
-        Self.running = True
-        Self.velocity_lock = threading.Lock()
-        Self.event_timestamps = []
+    def load_config(self):
+        """Loads configuration from external config.json or creates a default one if empty."""
+        if getattr(sys, 'frozen', False):
+            base_path = Path(sys.executable).parent
+        else:
+            base_path = Path(__file__).parent
+            
+        config_path = base_path / "config.json"
+        
+        default_config = {
+	SLACK_WEBHOOK_URL = "YOUR_SLACK_WEBHOOK_URL"
+            "target_dirs": [str(Path.home() / "Desktop")],
+            "entropy_threshold": 7.9,
+            "velocity_limit": 10,
+            "velocity_window": 1.0
+        }
+        
+        # Check if file exists and has content (> 0 bytes)
+        # Check if file exists and has content (> 0 bytes)
+        if config_path.exists() and config_path.stat().st_size > 0:
+            try:
+                with open(config_path, "r", encoding="utf-8-sig") as f:
+                    user_config = json.load(f)
+                    default_config.update(user_config)
+                    logging.info(f"Loaded configuration from {config_path}")
+            except Exception as e:
+                logging.error(f"Failed to parse config.json: {e}. Using defaults.")
+        else:
+            logging.warning(f"config.json missing or empty. Generating default config at {config_path}")
+            try:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(default_config, f, indent=4)
+            except Exception as e:
+                logging.error(f"Failed to write default config.json: {e}")
+                
+        return default_config
 
-        # Thresholds
-        Self.entropy_threshold = 7.2
-        Self.velocity_limit = 10
-        Self.velocity_window = 1.0
+    def __init__(self):
+        self.config = self.load_config()
+        self.target_dirs = [Path(d) for d in self.config.get("target_dirs")]
+        self.slack_webhook_url = self.config.get("slack_webhook_url")
+        self.running = True
+        self.velocity_lock = threading.Lock()
+        self.event_timestamps = []
+
+        # Thresholds from config
+        self.entropy_threshold = self.config.get("entropy_threshold")
+        self.velocity_limit = self.config.get("velocity_limit")
+        self.velocity_window = self.config.get("velocity_window")
 
         try:
-            Self.wmi_obj = wmi.WMI()
-        except exception as e:
-            # Handle exception or log here
-            Pass
+            self.wmi_obj = wmi.WMI()
+        except Exception as e:
+            pass
 
     def send_slack_alert(self, message):
-        """Sends telemetry alerts to your Slack workspace channel."""
+        """sends telemetry alerts to your Slack workspace channel."""
         if not self.slack_webhook_url:
             return
         try:
@@ -101,20 +140,46 @@ class SentinelV2Engine:
             return 0.0
 
     def check_entropy_sensor(self):
-        """Continuously scans monitored directories for high-entropy (encrypted) files."""
+        """Continuously scans monitored directories for high-entropy (encrypted) files with alert de-duplication."""
         logging.info("Entropy Sensor Thread Initialized.")
+        
+        ignored_extensions = {".zip", ".rar", ".7z", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".pdf", ".ogg"}
+        ignored_dir_names = {".git", "build", "dist", "__pycache__"}
+        
+        # Track already alerted files by path and their last modification time
+        alerted_files = {}
+
         while self.running:
             try:
                 for target_dir in self.target_dirs:
                     if not target_dir.exists():
                         continue
                     for file_path in target_dir.rglob('*'):
+                        if any(part in ignored_dir_names for part in file_path.parts):
+                            continue
+
                         if file_path.is_file():
+                            if file_path.suffix.lower() in ignored_extensions:
+                                continue
+
+                            try:
+                                current_mtime = file_path.stat().st_mtime
+                            except Exception:
+                                continue
+
+                            # Check if we already alerted for this file at this modification state
+                            if file_path in alerted_files and alerted_files[file_path] == current_mtime:
+                                continue
+
                             entropy = self.calculate_shannon_entropy(file_path)
                             if entropy > self.entropy_threshold:
                                 alert_msg = f"High Entropy Alert! File: {file_path} | Entropy: {entropy:.2f}"
                                 logging.warning(alert_msg)
                                 self.send_slack_alert(alert_msg)
+                                
+                                # Remember that we've alerted for this file version
+                                alerted_files[file_path] = current_mtime
+
             except Exception as e:
                 logging.error(f"Error in entropy sensor: {e}")
             time.sleep(5)
@@ -142,14 +207,33 @@ class SentinelV2Engine:
             time.sleep(0.2)
 
     def check_system_processes(self):
-        """Monitors active system processes utilizing psutil and win32 security context."""
+        """Monitors active system processes utilizing psutil and flags blacklisted terms."""
         logging.info("Process Monitor Thread Initialized.")
+        
+        # Blacklisted process names or keywords to watch out for
+        blacklisted_processes = {"vssadmin.exe", "wbadmin.exe", "bcdedit.exe", "powershell_ise.exe"}
+        
+        # Track already alerted PIDs to avoid flooding
+        alerted_pids = set()
+
         while self.running:
             try:
                 for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
-                    pass
+                    try:
+                        pinfo = proc.info
+                        p_name = pinfo.get('name')
+                        p_id = pinfo.get('pid')
+                        
+                        if p_name and p_name.lower() in blacklisted_processes:
+                            if p_id not in alerted_pids:
+                                alert_msg = f"Suspicious Process Alert! Name: {p_name} | PID: {p_id}"
+                                logging.warning(alert_msg)
+                                self.send_slack_alert(alert_msg)
+                                alerted_pids.add(p_id)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        continue
             except Exception as e:
-                logging.debug(f"Process check error: {e}")
+                logging.error(f"Process check error: {e}")
             time.sleep(10)
 
     def run_engine(self):
@@ -172,11 +256,8 @@ class SentinelV2Engine:
             self.running = False
 
 if __name__ == "__main__":
-    monitored_paths = [os.path.expanduser("~/Desktop/TestZone")]
-    slack_webhooks = {
-        "alerts": os.environ.get("SLACK_WEBHOOK_ALERTS_URL"),
-        "defenses": os.environ.get("SLACK_WEBHOOK_DEFENSES_URL")
-    }
-
-    engine = SentinelV2Engine(target_dirs=monitored_paths, slack_webhook_url=slack_webhooks)
+    # Initialize the engine - settings are loaded automatically from config.json
+    engine = SentinelV2Engine()
+    
+    # Start the EDR engine sensors
     engine.run_engine()

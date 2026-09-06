@@ -1,0 +1,7 @@
+{
+  "slack_webhook_url": "YOUR_SLACK_WEBHOOK_URL_HERE",
+  "target_dirs": ["C:\\Users\\ASUS\\Desktop"],
+  "entropy_threshold": 7.9,
+  "velocity_limit": 10,
+  "velocity_window": 1.0
+}
