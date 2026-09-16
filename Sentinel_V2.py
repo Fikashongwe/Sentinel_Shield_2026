@@ -47,16 +47,17 @@ logging.basicConfig(
 
 class SentinelV2Engine:
     def load_config(self):
-        """Loads configuration from external config.json or creates a default one if empty."""
-        if getattr(sys, 'frozen', False):
-            base_path = Path(sys.executable).parent
-        else:
-            base_path = Path(__file__).parent
-        # ... keep existing load_config logic ...
+        try:
+            if Path("config.json").exists():
+                with open("config.json", "r") as f:
+                    return json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load config: {e}")
+        return {}
 
     def __init__(self):
-        self.config = self.load_config()
-        self.target_dirs = [Path(d) for d in self.config.get("target_dirs")]
+        self.config = self.load_config() or {}
+        self.target_dirs = [Path(d) for d in self.config.get("target_dirs", [])]
         self.slack_webhook_url = self.config.get("slack_webhook_url")
         self.running = True
         self.velocity_lock = threading.Lock()
