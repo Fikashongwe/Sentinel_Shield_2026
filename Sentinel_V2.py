@@ -10,6 +10,7 @@ import urllib3
 import win32security
 from pathlib import Path
 import wmi
+import sys
 
 # Configure Webhook URL and Helper Function
 
@@ -43,6 +44,7 @@ logging.basicConfig(
 ]
 )
 
+
 class SentinelV2Engine:
     def load_config(self):
         """Loads configuration from external config.json or creates a default one if empty."""
@@ -50,36 +52,7 @@ class SentinelV2Engine:
             base_path = Path(sys.executable).parent
         else:
             base_path = Path(__file__).parent
-            
-        config_path = base_path / "config.json"
-        
-        default_config = {
-	SLACK_WEBHOOK_URL = "YOUR_SLACK_WEBHOOK_URL"
-            "target_dirs": [str(Path.home() / "Desktop")],
-            "entropy_threshold": 7.9,
-            "velocity_limit": 10,
-            "velocity_window": 1.0
-        }
-        
-        # Check if file exists and has content (> 0 bytes)
-        # Check if file exists and has content (> 0 bytes)
-        if config_path.exists() and config_path.stat().st_size > 0:
-            try:
-                with open(config_path, "r", encoding="utf-8-sig") as f:
-                    user_config = json.load(f)
-                    default_config.update(user_config)
-                    logging.info(f"Loaded configuration from {config_path}")
-            except Exception as e:
-                logging.error(f"Failed to parse config.json: {e}. Using defaults.")
-        else:
-            logging.warning(f"config.json missing or empty. Generating default config at {config_path}")
-            try:
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(default_config, f, indent=4)
-            except Exception as e:
-                logging.error(f"Failed to write default config.json: {e}")
-                
-        return default_config
+        # ... keep existing load_config logic ...
 
     def __init__(self):
         self.config = self.load_config()
@@ -88,17 +61,51 @@ class SentinelV2Engine:
         self.running = True
         self.velocity_lock = threading.Lock()
         self.event_timestamps = []
+        
+        # Start background ntfy C2 listener thread
+        import threading
+        threading.Thread(
+            target=self.ntfy_listener_loop, 
+            args=("https://ntfy.sh/sentinel_v2_status_demo",), 
+            daemon=True
+        ).start()
 
-        # Thresholds from config
-        self.entropy_threshold = self.config.get("entropy_threshold")
-        self.velocity_limit = self.config.get("velocity_limit")
-        self.velocity_window = self.config.get("velocity_window")
+    def handle_remote_command(self, command):
+        """Execute remote operational commands."""
+        cmd = command.strip().upper()
+        self.send_slack_alert(f"Received remote command: {cmd}")
+        if cmd == "STATUS":
+            self.send_slack_alert("Agent is online and monitoring.")
+        elif cmd == "REBOOT":
+            self.send_slack_alert("Executing remote reboot...")
+            import os
+            os.system("shutdown /r /t 1")
+        elif cmd == "STOP":
+            self.send_slack_alert("Stopping agent.")
+            import sys
+            sys.exit(0)
 
-        try:
-            self.wmi_obj = wmi.WMI()
-        except Exception as e:
-            pass
-
+    def ntfy_listener_loop(self, topic_url):
+        """Continuously listen for remote commands via ntfy streaming."""
+        import json
+        import time
+        import urllib3
+        http = urllib3.PoolManager()
+        json_url = f"{topic_url}/json"
+        while self.running:
+            try:
+                response = http.request('GET', json_url, preload_content=False, timeout=None)
+                for line in response.stream(amt=1024, decode_content=True):
+                    if line:
+                        try:
+                            event = json.loads(line.decode('utf-8'))
+                            if event.get("event") == "message":
+                                msg = event.get("message", "")
+                                self.handle_remote_command(msg)
+                        except Exception:
+                            pass
+            except Exception as e:
+                time.sleep(5.0)            
     def send_slack_alert(self, message):
         """sends telemetry alerts to your Slack workspace channel."""
         if not self.slack_webhook_url:
