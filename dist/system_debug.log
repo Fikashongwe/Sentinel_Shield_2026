@@ -1,0 +1,15 @@
+2026-09-24 16:29:59,334 [INFO] MainThread: Starting Sentinel_V2 Multi-Sensor EDR Engine...
+2026-09-24 16:29:59,335 [INFO] EntropySensorThread: Entropy Sensor Thread Initialized.
+2026-09-24 16:29:59,336 [INFO] VelocitySensorThread: Velocity Sensor Thread Initialized.
+2026-09-24 16:29:59,336 [INFO] ProcessSensorThread: Process Monitor Thread Initialized.
+2026-09-24 16:29:59,892 [WARNING] ProcessSensorThread: Suspicious Process Alert! Name: powershell_ise.exe | PID: 25872
+2026-09-24 16:29:59,893 [ERROR] ProcessSensorThread: Slack webhook error: Invalid URL 'YOUR_SLACK_WEBHOOK_URL_HERE': No scheme supplied. Perhaps you meant https://YOUR_SLACK_WEBHOOK_URL_HERE?
+2026-09-24 16:30:50,707 [WARNING] EntropySensorThread: High Entropy Alert! File: C:\Users\ASUS\Desktop\ransomware_test.bin | Entropy: 7.98
+2026-09-24 16:30:50,709 [ERROR] EntropySensorThread: Slack webhook error: Invalid URL 'YOUR_SLACK_WEBHOOK_URL_HERE': No scheme supplied. Perhaps you meant https://YOUR_SLACK_WEBHOOK_URL_HERE?
+2026-09-26 23:23:35,161 [ERROR] MainThread: Slack webhook error: Invalid URL 'YOUR_SLACK_WEBHOOK_URL_HERE': No scheme supplied. Perhaps you meant https://YOUR_SLACK_WEBHOOK_URL_HERE?
+2026-09-26 23:23:36,720 [INFO] MainThread: Starting Sentinel_V2 Multi-Sensor EDR Engine...
+2026-09-26 23:23:36,720 [INFO] EntropySensorThread: Entropy Sensor Thread Initialized.
+2026-09-26 23:23:36,721 [INFO] VelocitySensorThread: Velocity Sensor Thread Initialized.
+2026-09-26 23:23:36,722 [INFO] ProcessSensorThread: Process Monitor Thread Initialized.
+2026-09-26 23:23:38,276 [WARNING] EntropySensorThread: High Entropy Alert! File: C:\Users\ASUS\Desktop\ransomware_test.bin | Entropy: 7.98
+2026-09-26 23:23:38,277 [ERROR] EntropySensorThread: Slack webhook error: Invalid URL 'YOUR_SLACK_WEBHOOK_URL_HERE': No scheme supplied. Perhaps you meant https://YOUR_SLACK_WEBHOOK_URL_HERE?
