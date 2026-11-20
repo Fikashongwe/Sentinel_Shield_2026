@@ -1,265 +1,410 @@
-import ctypes
-import json
-import os
-import platform
-import socket
-import threading
+﻿import os
+import sys
 import time
-import tkinter as tk
-from tkinter import messagebox
-import urllib.request
-import psutil
+import json
+import ctypes
+import logging
+import threading
+import subprocess
+from collections import deque
+import urllib3
+import win32con
+import win32file
+from ctypes import wintypes
 
-# ==========================================
-# CONFIGURATION
-# ==========================================
-# Replace the hardcoded URL with environment variable lookup
-SLACK_WEBHOOK_URL = os.environ.get(
-    "SLACK_WEBHOOK_URL", "YOUR_FALLBACK_OR_PROMPT_URL"
-)
-INSTALL_DIR = os.path.join(os.path.expanduser("~"), "Sentinel_V2")
+ERROR_ALREADY_EXISTS = 183
+
+def enforce_single_instance(mutex_name: str = "Global\\SentinelShield_SingleInstance_Mutex"):
+    """Ensure only one SentinelShield worker instance runs across all Windows sessions."""
+    if sys.platform != "win32":
+        return None
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    last_error = ctypes.get_last_error()
+
+    if not handle or last_error == ERROR_ALREADY_EXISTS:
+        if handle:
+            kernel32.CloseHandle(handle)
+        sys.exit(0)
+
+    return handle
+
+# Keep mutex handle alive for the entire lifetime of the process
+_INSTANCE_MUTEX = enforce_single_instance()
+
+from sentinel_modules.process_killer import neutralize_offending_processes
+from sentinel_modules.vss_guard import start_vss_guard
+from sentinel_modules.tamper_guard import apply_tamper_protection
+from sentinel_modules.tray_ui import SentinelTray
+
+tray = None
+
+# ==============================================================================
+# PATH & CONFIGURATION LOADER
+# ==============================================================================
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+LOG_PATH = os.path.join(BASE_DIR, "sentinel_activity.log")
+
+DEFAULT_CONFIG = {
+    "canary_directories": [os.path.join(BASE_DIR, "test_sandbox")],
+    "work_directories": [
+        "%USERPROFILE%\\Documents",
+        "%USERPROFILE%\\Desktop",
+    ],
+    "work_threshold_count": 5,
+    "work_threshold_window_seconds": 3,
+    "allowed_extensions": [".docx", ".xlsx"],
+    "target_adapter": "auto",
+    "webhook_url": "",
+    "cooldown_seconds": 10,
+}
 
 
-class ForensicReporter:
-
-  def __init__(self, incident_type, details, initiator="Unknown"):
-    self.timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-    self.hostname = socket.gethostname()
-    self.ip_address = socket.gethostbyname(self.hostname)
-    self.os_info = platform.platform()
-    self.incident_type = incident_type
-    self.details = details
-    self.initiator = initiator
-
-  def generate_report_file(self):
-    """Compiles a detailed formal report document for insurance handoff."""
-    report_content = f"""====================================================================
-               CYBERSECURITY INCIDENT FORENSIC REPORT
-               KHANYISA INVESTMENTS - SENTINEL V2 SUITE
-====================================================================
-1. INCIDENT METADATA
---------------------------------------------------------------------
-* Timestamp (UTC): {self.timestamp}
-* Hostname:        {self.hostname}
-* IP Address:      {self.ip_address}
-* Operating System:{self.os_info}
-
-2. INCIDENT CLASSIFICATION
---------------------------------------------------------------------
-* Event Type:      {self.incident_type}
-* Initiator/Source:{self.initiator}
-
-3. TECHNICAL DETAILS & VECTOR ANALYSIS
---------------------------------------------------------------------
-{self.details}
-
-4. SYSTEM INTEGRITY & COMPLIANCE STATEMENT
---------------------------------------------------------------------
-This document is automatically compiled by Sentinel V2 EDR telemetry nodes 
-immediately upon threat detection. All hashes, timestamps, and behavioral 
-logs are preserved for insurance claim verification, legal escalation, 
-and root-cause analysis.
-====================================================================
-"""
-    filename = f"Incident_Report_{time.strftime('%Y%m%d_%H%M%S')}.txt"
-    filepath = os.path.join(INSTALL_DIR, filename)
-
-    os.makedirs(INSTALL_DIR, exist_ok=True)
-    with open(filepath, "w", encoding="utf-8") as f:
-      f.write(report_content)
-
-    return filepath
-
-  def send_to_slack(self, report_path):
-    """Sends a structured alert card and evidentiary summary to Slack."""
-    if not SLACK_WEBHOOK_URL or "YOUR/WEBHOOK" in SLACK_WEBHOOK_URL:
-      return
-
-    slack_payload = {
-        "text": f"🚨 *INSURANCE-GRADE SECURITY INCIDENT REPORT* 🚨\n"
-        f"• *Time:* `{self.timestamp}`\n"
-        f"• *Host:* `{self.hostname}` ({self.ip_address})\n"
-        f"• *Threat:* `{self.incident_type}`\n"
-        f"• *Initiator:* `{self.initiator}`\n\n"
-        f"📋 *Summary:* {self.details}\n\n"
-        f"📁 *Evidentiary Document Generated:* `{os.path.basename(report_path)}`"
-    }
-
-    req = urllib.request.Request(
-        SLACK_WEBHOOK_URL,
-        data=json.dumps(slack_payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "SentinelV2-Reporter",
-        },
-    )
-
+def get_active_adapters():
+    """Queries Windows netsh to find all currently Connected network adapters."""
+    adapters = []
     try:
-      with urllib.request.urlopen(req) as response:
-        pass
-    except Exception as e:
-      print(f"Failed to send Slack alert: {e}")
-
-
-def trigger_delayed_forensic_report(incident_type, details, initiator):
-  """Spawns a background worker that waits 3 minutes for log stabilization,
-
-  then compiles and dispatches the formal insurance report.
-  """
-  def worker():
-    time.sleep(180)  # 3-minute stabilization delay
-    reporter = ForensicReporter(
-        incident_type=incident_type, details=details, initiator=initiator
-    )
-    report_path = reporter.generate_report_file()
-    reporter.send_to_slack(report_path)
-
-  threading.Thread(target=worker, daemon=False).start()
-
-
-def lock_workstation():
-  """Locks the Windows workstation immediately upon security violation."""
-  try:
-    ctypes.windll.user32.LockWorkStation()
-  except Exception as e:
-    print(f"Error locking workstation: {e}")
-
-
-def send_alert(message):
-  """Dispatches immediate notification ping to Slack."""
-  if not SLACK_WEBHOOK_URL or "YOUR/WEBHOOK" in SLACK_WEBHOOK_URL:
-    return
-  payload = {"text": f"⚠️ *Sentinel V2 Alert*: {message}"}
-  req = urllib.request.Request(
-      SLACK_WEBHOOK_URL,
-      data=json.dumps(payload).encode("utf-8"),
-      headers={"Content-Type": "application/json"},
-  )
-  try:
-    urllib.request.urlopen(req)
-  except Exception as e:
-    print(f"Slack notification error: {e}")
-
-
-def run_monitoring_engine():
-  print("Sentinel V2 Security Engine Active...")
-  os.makedirs(INSTALL_DIR, exist_ok=True)
-
-  battery = psutil.sensors_battery()
-  last_power_plugged = battery.power_plugged if battery else True
-  print(f"[DEBUG] Initial Power Plugged State: {last_power_plugged}")
-
-  while True:
-    try:
-      current_battery = psutil.sensors_battery()
-      if current_battery:
-        current_plugged = current_battery.power_plugged
-        # Print every check so you can see live telemetry in the console
-        print(
-            f"[DEBUG] Monitoring... Plugged: {current_plugged} | Last:"
-            f" {last_power_plugged}"
+        output = subprocess.check_output(
+            ["netsh", "interface", "show", "interface"],
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
         )
-
-        if last_power_plugged and not current_plugged:
-          print(
-              "🔴 [TRIGGER] Power cable disconnected! Executing security"
-              " protocols..."
-          )
-          send_alert("Power cable disconnected! Locking workstation for security.")
-          lock_workstation()
-
-          trigger_delayed_forensic_report(
-              incident_type="Physical Security Violation (Power Disconnect)",
-              details=(
-                  "Power cable was abruptly unplugged from the host machine. "
-                  "Automated workstation lockdown protocol engaged immediately."
-              ),
-              initiator="Physical User / Power State Sensor (Host Node)",
-          )
-
-        last_power_plugged = current_plugged
-      else:
-        print("[DEBUG] Warning: psutil.sensors_battery() returned None.")
-
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1].lower() == "connected":
+                adapters.append(" ".join(parts[3:]))
     except Exception as e:
-      print(f"[ERROR] Error in monitoring loop: {e}")
+        logging.error(f"[-] Failed to enumerate network adapters: {e}")
+    return adapters
 
-    time.sleep(5)
+def isolate_network(target_adapter):
+    adapters = get_active_adapters() if target_adapter.lower() == "auto" else [target_adapter]
+    if not adapters:
+        logging.warning("[!] No active network adapters found to isolate.")
+        return "None"
 
+    isolated = []
+    for adapter in adapters:
+        try:
+            subprocess.run(
+                ["netsh", "interface", "set", "interface", adapter, "admin=disable"],
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            logging.info(f"[+] Target network isolation successful: {adapter} adapter disabled.")
+            isolated.append(adapter)
+        except Exception as e:
+            logging.error(f"[-] Failed to disable adapter '{adapter}': {e}")
 
-class SentinelApp:
+    return ", ".join(isolated) if isolated else "Failed"
 
-  def __init__(self, root):
-    self.root = root
-    self.root.title("Sentinel V2 - Secure Deployment Wizard")
-    self.root.geometry("450x300")
-    self.root.resizable(False, False)
+def get_active_adapters():
+    adapters = []
+    try:
+        output = subprocess.check_output(
+            ["netsh", "interface", "show", "interface"],
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1].lower() == "connected":
+                adapters.append(" ".join(parts[3:]))
+    except Exception as e:
+        logging.error(f"[-] Failed to enumerate network adapters: {e}")
+    return adapters
 
-    # UI Elements
-    title_label = tk.Label(
-        root, text="Khanyisa Investments EDR", font=("Arial", 14, "bold")
+def isolate_network(target_adapter):
+    adapters = get_active_adapters() if target_adapter.lower() == "auto" else [target_adapter]
+    if not adapters:
+        logging.warning("[!] No active network adapters found to isolate.")
+        return "None"
+
+    isolated = []
+    for adapter in adapters:
+        try:
+            subprocess.run(
+                ["netsh", "interface", "set", "interface", adapter, "admin=disable"],
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            logging.info(f"[+] Target network isolation successful: {adapter} adapter disabled.")
+            isolated.append(adapter)
+        except Exception as e:
+            logging.error(f"[-] Failed to disable adapter '{adapter}': {e}")
+
+    return ", ".join(isolated) if isolated else "Failed"
+
+def trigger_lockdown(target_file: str, event_type: str):
+    """Coordinates process termination, isolation, webhook notification, and user alert."""
+    global last_trigger_time
+    with lockdown_lock:
+        now = time.time()
+        if now - last_trigger_time < COOLDOWN_SECONDS:
+            return
+        last_trigger_time = now
+
+    killed_procs = neutralize_offending_processes([target_file])
+    killed_summary = (
+        ", ".join(f"{p['name']} (PID {p['pid']})" for p in killed_procs)
+        if killed_procs else "None"
     )
-    title_label.pack(pady=15)
 
-    self.status_label = tk.Label(
-        root, text="Status: Ready to deploy telemetry node.", font=("Arial", 10)
+    if tray:
+        tray.set_lockdown_state()
+
+    logger.critical(
+        f"[*] Emergency lockdown triggered by {event_type.lower()}: {target_file} | Killed: {killed_summary}"
     )
-    self.status_label.pack(pady=10)
+    isolate_network(TARGET_ADAPTER)
+    send_webhook_alert(f"{event_type} on {target_file} | Neutralized: {killed_summary}")
+    show_emergency_popup(target_file, event_type)
 
-    self.deploy_btn = tk.Button(
-        root,
-        text="Initialize & Start Sentinel",
-        font=("Arial", 11, "bold"),
-        bg="#007ACC",
-        fg="white",
-        padx=10,
-        pady=5,
-        command=self.start_deployment,
+
+def load_config():
+    """Loads settings from config.json or creates a default file if missing."""
+    if not os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_CONFIG, f, indent=2)
+        return DEFAULT_CONFIG
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def resolve_paths(path_list):
+    """Expands Windows environment variables like %USERPROFILE% and normalizes paths."""
+    resolved = []
+    for raw_path in path_list:
+        expanded = os.path.abspath(os.path.expandvars(raw_path))
+        resolved.append(expanded)
+    return resolved
+
+
+CONFIG = load_config()
+CANARY_DIRS = resolve_paths(CONFIG.get("canary_directories", DEFAULT_CONFIG["canary_directories"]))
+WORK_DIRS = resolve_paths(CONFIG.get("work_directories", DEFAULT_CONFIG["work_directories"]))
+WORK_THRESHOLD_COUNT = int(CONFIG.get("work_threshold_count", 5))
+WORK_THRESHOLD_WINDOW = float(CONFIG.get("work_threshold_window_seconds", 3))
+ALLOWED_EXTENSIONS = tuple(
+    ext.lower() for ext in CONFIG.get("allowed_extensions", DEFAULT_CONFIG["allowed_extensions"])
+)
+TARGET_ADAPTER = CONFIG.get("target_adapter", DEFAULT_CONFIG["target_adapter"])
+WEBHOOK_URL = CONFIG.get("webhook_url", DEFAULT_CONFIG["webhook_url"])
+COOLDOWN_SECONDS = float(CONFIG.get("cooldown_seconds", 10))
+
+FILE_NOTIFY_CHANGE_LAST_ACCESS = 0x00000020
+
+ACTION_MAP = {
+    1: "Created / File Opened",
+    2: "Deleted",
+    3: "Accessed / Modified",
+    4: "Renamed (Old Name)",
+    5: "Renamed (New Name)",
+}
+
+# ==============================================================================
+# LOGGING SETUP
+# ==============================================================================
+logger = logging.getLogger("SentinelShield")
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+file_handler = logging.FileHandler(LOG_PATH, mode="a", encoding="utf-8")
+file_handler.setFormatter(formatter)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# ==============================================================================
+# CORE DEFENSE & RESPONSE FUNCTIONS
+# ==============================================================================
+lockdown_lock = threading.Lock()
+last_trigger_time = 0.0
+http = urllib3.PoolManager()
+
+
+def get_active_adapters():
+    adapters = []
+    try:
+        output = subprocess.check_output(
+            ["netsh", "interface", "show", "interface"],
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1].lower() == "connected":
+                adapters.append(" ".join(parts[3:]))
+    except Exception as e:
+        logging.error(f"[-] Failed to enumerate network adapters: {e}")
+    return adapters
+
+def isolate_network(target_adapter):
+    adapters = get_active_adapters() if target_adapter.lower() == "auto" else [target_adapter]
+    if not adapters:
+        logging.warning("[!] No active network adapters found to isolate.")
+        return "None"
+
+    isolated = []
+    for adapter in adapters:
+        try:
+            subprocess.run(
+                ["netsh", "interface", "set", "interface", adapter, "admin=disable"],
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            logging.info(f"[+] Target network isolation successful: {adapter} adapter disabled.")
+            isolated.append(adapter)
+        except Exception as e:
+            logging.error(f"[-] Failed to disable adapter '{adapter}': {e}")
+
+    return ", ".join(isolated) if isolated else "Failed"
+
+def send_webhook_alert(event_detail: str):
+    """Sends an HTTP JSON alert if WEBHOOK_URL is configured."""
+    if not WEBHOOK_URL:
+        return
+    try:
+        payload = json.dumps({"text": f"CRITICAL - SentinelShield Alert: {event_detail}"}).encode("utf-8")
+        http.request(
+            "POST",
+            WEBHOOK_URL,
+            body=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=3.0,
+        )
+        logger.info("[+] Webhook alert dispatched.")
+    except Exception as exc:
+        logger.error(f"[-] Webhook dispatch failed: {exc}")
+
+
+def show_emergency_popup(target_file: str, event_type: str):
+    """Displays a top-most Windows alert box without blocking the watcher thread."""
+    def _popup():
+        message = (
+            f"SECURITY ALERT: Protected Asset Triggered!\n\n"
+            f"Event: {event_type}\n"
+            f"Target: {target_file}\n\n"
+            f"Automated network isolation has been executed on '{TARGET_ADAPTER}'."
+        )
+        ctypes.windll.user32.MessageBoxW(0, message, "SentinelShield Emergency Lockdown", 0x10 | 0x1000)
+
+    threading.Thread(target=_popup, daemon=True).start()
+
+
+def trigger_lockdown(target_file: str, event_type: str):
+    """Coordinates logging, isolation, webhook notification, and user alert."""
+    global last_trigger_time
+    with lockdown_lock:
+        now = time.time()
+        if now - last_trigger_time < COOLDOWN_SECONDS:
+            return
+        last_trigger_time = now
+
+    logger.critical(
+        f"[*] Emergency lockdown triggered by {event_type.lower()}: {target_file}"
     )
-    self.deploy_btn.pack(pady=20)
+    isolate_network(TARGET_ADAPTER)
+    send_webhook_alert(f"{event_type} on {target_file}")
+    show_emergency_popup(target_file, event_type)
 
-    self.finish_btn = tk.Button(
-        root,
-        text="Finish & Run in Background",
-        font=("Arial", 10),
-        state="disabled",
-        command=self.close_wizard,
+
+# ==============================================================================
+# DUAL-MODE DIRECTORY WATCHER (CANARY VS. WORK DIRECTORIES)
+# ==============================================================================
+def watch_directory(target_dir: str, mode: str = "canary"):
+    """Monitors a directory in 'canary' (instant) or 'work' (burst-threshold) mode."""
+    os.makedirs(target_dir, exist_ok=True)
+    notify_filter = (
+        win32con.FILE_NOTIFY_CHANGE_FILE_NAME
+        | win32con.FILE_NOTIFY_CHANGE_LAST_WRITE
     )
-    self.finish_btn.pack(pady=5)
+    if mode == "canary":
+        notify_filter |= FILE_NOTIFY_CHANGE_LAST_ACCESS
 
-  def start_deployment(self):
-    """Deactivates button, sets up directories, and spawns monitoring thread."""
-    self.deploy_btn.config(state="disabled", bg="#A0A0A0")
-    self.status_label.config(text="Status: Setting up secure directories...")
-    self.root.update()
+    dir_handle = win32file.CreateFile(
+        target_dir,
+        win32con.GENERIC_READ,
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+        None,
+        win32con.OPEN_EXISTING,
+        win32con.FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+
+    recent_work_events = deque()
+    logger.info(f"[*] Watching [{mode.upper()}] directory: {target_dir}")
 
     try:
-      os.makedirs(INSTALL_DIR, exist_ok=True)
-      time.sleep(1)
+        while True:
+            events = win32file.ReadDirectoryChangesW(
+                dir_handle,
+                4096,
+                True,
+                notify_filter,
+                None,
+                None,
+            )
+            for action, rel_filename in events:
+                if not rel_filename:
+                    continue
 
-      self.status_label.config(text="Status: Sentinel Node Active & Watching!")
-      messagebox.showinfo(
-          "Success",
-          "Sentinel V2 deployed successfully! Telemetry monitoring is now"
-          " active.",
-      )
+                basename = os.path.basename(rel_filename)
+                if basename.startswith("~$") or not basename.lower().endswith(ALLOWED_EXTENSIONS):
+                    continue
 
-      # Enable finish button cleanly
-      self.finish_btn.config(state="normal")
+                full_target = os.path.join(target_dir, rel_filename)
+                event_desc = ACTION_MAP.get(action, f"Unknown Action ({action})")
 
-      # Launch monitoring engine in a background daemon thread
-      threading.Thread(target=run_monitoring_engine, daemon=False).start()
+                if mode == "canary":
+                    trigger_lockdown(full_target, f"Canary {event_desc}")
+                else:
+                    # Work mode: only count write/rename/delete actions, ignore normal single reads
+                    if action in (1, 2, 3, 5):
+                        now = time.time()
+                        recent_work_events.append((now, full_target))
+                        while recent_work_events and (now - recent_work_events[0][0]) > WORK_THRESHOLD_WINDOW:
+                            recent_work_events.popleft()
 
-    except Exception as e:
-      messagebox.showerror("Error", f"Deployment failed: {e}")
-      self.deploy_btn.config(state="normal", bg="#007ACC")
-
-  def close_wizard(self):
-    """Cleanly destroys the GUI window without affecting the background engine."""
-    self.root.destroy()
+                        unique_files = {item[1] for item in recent_work_events}
+                        if len(unique_files) >= WORK_THRESHOLD_COUNT:
+                            recent_work_events.clear()
+                            trigger_lockdown(
+                                full_target,
+                                f"Rapid Mass Modification ({len(unique_files)} files in {WORK_THRESHOLD_WINDOW}s)",
+                            )
+    finally:
+        win32file.CloseHandle(dir_handle)
 
 
 if __name__ == "__main__":
-  root = tk.Tk()
-  app = SentinelApp(root)
-  root.mainloop()
+    logger.info("[*] SentinelShield Engine Started (Dual-Zone Dynamic Mode).")
+    apply_tamper_protection(BASE_DIR)
+    tray = SentinelTray(BASE_DIR, on_exit_callback=lambda: os._exit(0))
+    tray.run_detached()
+    start_vss_guard(on_threat_callback=trigger_lockdown)
+
+    for c_dir in CANARY_DIRS:
+        threading.Thread(target=watch_directory, args=(c_dir, "canary"), daemon=True).start()
+
+    for w_dir in WORK_DIRS:
+        # Avoid double-watching if a canary directory sits inside Desktop
+        threading.Thread(target=watch_directory, args=(w_dir, "work"), daemon=True).start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("[*] SentinelShield Engine stopped by operator.")
