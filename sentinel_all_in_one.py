@@ -165,8 +165,8 @@ def trigger_lockdown(target_file: str, event_type: str):
     logger.critical(
         f"[*] Emergency lockdown triggered by {event_type.lower()}: {target_file} | Killed: {killed_summary}"
     )
-    isolate_network(TARGET_ADAPTER)
     send_webhook_alert(f"{event_type} on {target_file} | Neutralized: {killed_summary}")
+    isolate_network(TARGET_ADAPTER)
     show_emergency_popup(target_file, event_type)
 
 
@@ -287,7 +287,7 @@ def send_webhook_alert(event_detail: str):
         )
         logger.info("[+] Webhook alert dispatched.")
     except Exception as exc:
-        logger.error(f"[-] Webhook dispatch failed: {exc}")
+        logger.error(f"[-] Webhook dispatch failed ({type(exc).__name__}): unable to reach webhook endpoint.")
 
 
 def show_emergency_popup(target_file: str, event_type: str):
