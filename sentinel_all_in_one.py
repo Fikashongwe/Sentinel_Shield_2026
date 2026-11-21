@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import time
 import json
@@ -144,7 +144,7 @@ def isolate_network(target_adapter):
 
     return ", ".join(isolated) if isolated else "Failed"
 
-def trigger_lockdown(target_file: str, event_type: str):
+def trigger_lockdown(target_file: str, event_type: str, extra_targets: list[str] | None = None):
     """Coordinates process termination, isolation, webhook notification, and user alert."""
     global last_trigger_time
     with lockdown_lock:
@@ -153,7 +153,8 @@ def trigger_lockdown(target_file: str, event_type: str):
             return
         last_trigger_time = now
 
-    killed_procs = neutralize_offending_processes([target_file])
+    scan_targets = list(dict.fromkeys([target_file] + (extra_targets or [])))
+    killed_procs = neutralize_offending_processes(scan_targets)
     killed_summary = (
         ", ".join(f"{p['name']} (PID {p['pid']})" for p in killed_procs)
         if killed_procs else "None"
@@ -176,7 +177,7 @@ def load_config():
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_CONFIG, f, indent=2)
         return DEFAULT_CONFIG
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -346,6 +347,7 @@ def watch_directory(target_dir: str, mode: str = "canary"):
     )
 
     recent_work_events = deque()
+    pending_protected_rename = False
     logger.info(f"[*] Watching [{mode.upper()}] directory: {target_dir}")
 
     try:
@@ -363,7 +365,25 @@ def watch_directory(target_dir: str, mode: str = "canary"):
                     continue
 
                 basename = os.path.basename(rel_filename)
-                if basename.startswith("~$") or not basename.lower().endswith(ALLOWED_EXTENSIONS):
+                if basename.startswith("~$"):
+                    continue
+
+                lower_name = basename.lower()
+                is_allowed = lower_name.endswith(ALLOWED_EXTENSIONS) or (
+                    action == 5 and os.path.splitext(lower_name)[0].endswith(ALLOWED_EXTENSIONS)
+                )
+
+                if action == 4:
+                    pending_protected_rename = is_allowed
+                    continue
+
+                if action == 5 and pending_protected_rename:
+                    is_allowed = True
+                    pending_protected_rename = False
+                else:
+                    pending_protected_rename = False
+
+                if not is_allowed:
                     continue
 
                 full_target = os.path.join(target_dir, rel_filename)
