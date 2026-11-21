@@ -232,7 +232,8 @@ logger.addHandler(console_handler)
 # ==============================================================================
 lockdown_lock = threading.Lock()
 last_trigger_time = 0.0
-http = urllib3.PoolManager()
+import certifi
+http = urllib3.PoolManager(cert_reqs="CERT_REQUIRED", ca_certs=certifi.where())
 
 
 def get_active_adapters():
