@@ -56,7 +56,7 @@ def find_locking_pids(file_path: str) -> set[int]:
     for proc in psutil.process_iter(["pid", "name"]):
         try:
             for f in proc.open_files():
-                if f.path.lower() == target:
+                if f.path.lower().removeprefix("\\\\?\\") == target:
                     pids.add(proc.info["pid"])
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             continue
@@ -78,13 +78,13 @@ def neutralize_offending_processes(target_paths: list[str]) -> list[dict]:
             continue
         try:
             proc = psutil.Process(pid)
-            name = (proc.name() or "").lower()
-            if name in PROTECTED_PROCESSES:
+            raw_name = proc.name() or "unknown"
+            if raw_name.lower() in PROTECTED_PROCESSES:
                 continue
             exe_path = proc.exe()
             proc.kill()
             proc.wait(timeout=3)
-            terminated.append({"pid": pid, "name": proc.name(), "exe": exe_path})
+            terminated.append({"pid": pid, "name": raw_name, "exe": exe_path})
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
             continue
 
