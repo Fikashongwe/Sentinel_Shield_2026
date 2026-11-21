@@ -1,12 +1,26 @@
 import os
-import random
+import time
 
-# Generate 1MB of completely random binary data (simulating encrypted/ransomware output)
-random_bytes = bytes([random.randint(0, 255) for _ in range(1024 * 1024)])
+def run_entropy_simulation():
+    sandbox_dir = "test_sandbox"
+    if not os.path.exists(sandbox_dir):
+        os.makedirs(sandbox_dir)
+    
+    print(f"[INFO] Initializing safe entropy simulation in '{sandbox_dir}'...")
+    
+    # Generate high-entropy dummy files to trigger entropy sensors
+    for i in range(10):
+        filename = os.path.join(sandbox_dir, f"test_document_{i}.docx")
+        # os.urandom generates random bytes (high entropy, similar to encrypted data)
+        random_payload = os.urandom(1024 * 512) # 512 KB per file
+        
+        with open(filename, "wb") as f:
+            f.write(random_payload)
+            
+        print(f"[SIMULATION] Created high-entropy file: {filename}")
+        time.sleep(0.2) # Brief pause to mimic rapid file transformation
+        
+    print("[SUCCESS] Entropy simulation complete. Check your sensor logs and Slack channel for alerts.")
 
-# Save it to your monitored Desktop directory
-test_file_path = os.path.expanduser(r"~\Desktop\ransomware_test.bin")
-with open(test_file_path, "wb") as f:
-    f.write(random_bytes)
-
-print(f"High-entropy test file created at: {test_file_path}")
+if __name__ == "__main__":
+    run_entropy_simulation()

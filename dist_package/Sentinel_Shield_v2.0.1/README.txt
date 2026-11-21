@@ -15,8 +15,11 @@ Sentinel Shield is a robust Python-based security agent compiled into a standalo
 * `mass_encryption_sensor.py` : Core encryption-detection monitoring logic.
 * `velocity.py` : Performance and speed telemetry tracking module.
 
-## Installation & Setup
-1. Download the latest `Sentinel_Shield_v2.0.1.zip` package from the [Releases](https://github.com/Fikashongwe/Sentinel_Shield_2026/releases) page.
-2. Extract the archive contents to your designated directory.
-3. Configure your local environment variables for Slack integration.
-4. Launch `sentinel_v2.exe` to begin automated monitoring and verify telemetry alerts in your Slack channel.
+## Troubleshooting & SmartScreen Notice
+
+Because Sentinel_Shield is an independent, newly developed EDR solution, Windows Defender SmartScreen may occasionally flag the executable upon first download. This is standard for custom compiled binaries that are not yet signed with a commercial CA certificate.
+
+**How to run Sentinel_Shield:**
+1. When the "Windows protected your PC" blue prompt appears, click **More info**.
+2. Click the **Run anyway** button that appears at the bottom.
+3. The EDR engine will launch successfully and begin guarding your system.

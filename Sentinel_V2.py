@@ -56,57 +56,106 @@ class SentinelV2Engine:
         return {}
 
     def __init__(self):
-        self.config = self.load_config() or {}
-        self.target_dirs = [Path(d) for d in self.config.get("target_dirs", [])]
-        self.slack_webhook_url = self.config.get("slack_webhook_url")
-        self.running = True
-        self.velocity_lock = threading.Lock()
-        self.event_timestamps = []
-        
-        # Start background ntfy C2 listener thread
-        import threading
-        threading.Thread(
-            target=self.ntfy_listener_loop, 
-            args=("https://ntfy.sh/sentinel_v2_status_demo",), 
-            daemon=True
-        ).start()
+      self.config = self.load_config() or {}
+      self.target_dirs = [
+          Path(d) for d in self.config.get("target_dirs", [])
+      ]
+      self.slack_webhook_url = self.config.get("slack_webhook_url")
+      self.running = True
+      self.velocity_limit = 10
+      self.velocity_lock = threading.Lock()
+      self.event_timestamps = []
+      self.entropy_threshold = 7.8
 
-    def handle_remote_command(self, command):
-        """Execute remote operational commands."""
-        cmd = command.strip().upper()
-        self.send_slack_alert(f"Received remote command: {cmd}")
-        if cmd == "STATUS":
-            self.send_slack_alert("Agent is online and monitoring.")
-        elif cmd == "REBOOT":
-            self.send_slack_alert("Executing remote reboot...")
-            import os
-            os.system("shutdown /r /t 1")
-        elif cmd == "STOP":
-            self.send_slack_alert("Stopping agent.")
-            import sys
-            sys.exit(0)
+      # This thread call MUST be indented inside __init__ so 'self' is recognized
+      threading.Thread(
+          target=self.ntfy_listener_loop,
+          args=(self.config.get("ntfy_topic", "STATUS"),),
+          daemon=True,
+      ).start()
 
-    def ntfy_listener_loop(self, topic_url):
-        """Continuously listen for remote commands via ntfy streaming."""
-        import json
-        import time
-        import urllib3
-        http = urllib3.PoolManager()
-        json_url = f"{topic_url}/json"
-        while self.running:
+      # Startup notifications
+      self.send_slack_alert(
+          "Sentinel_V2 framework initialized successfully. Team monitoring active."
+      )
+      self.send_ntfy(
+          "START",
+          "Sentinel Started",
+          "Execution loop initialized with full sensor telemetry.",
+          "rocket",
+      )
+    def send_slack_alert(self, message):
+        """Sends telemetry alerts to your Slack workspace channel."""
+        if not self.slack_webhook_url:
+            return
+        try:
+            payload = {"text": f"[Sentinel_V2 Security Alert] {message}"}
+            response = requests.post(self.slack_webhook_url, json=payload, timeout=5)
+            if response.status_code != 200:
+                logging.error(f"Failed to send Slack alert: {response.status_code}")
+        except Exception as e:
+            logging.error(f"Failed to send Slack alert: {e}")
+
+    def terminate_process_by_name(self, process_name):
+        """Automatically kill malicious processes on detection."""
+        for proc in psutil.process_iter(['pid', 'name']):
             try:
-                response = http.request('GET', json_url, preload_content=False, timeout=None)
-                for line in response.stream(amt=1024, decode_content=True):
-                    if line:
-                        try:
-                            event = json.loads(line.decode('utf-8'))
-                            if event.get("event") == "message":
-                                msg = event.get("message", "")
-                                self.handle_remote_command(msg)
-                        except Exception:
-                            pass
+                if proc.info['name'] and process_name.lower() in proc.info['name'].lower():
+                    pid = proc.info['pid']
+                    logging.warning(f"Auto-Remediation: Terminating malicious process {process_name} (PID: {pid})")
+                    p = psutil.Process(pid)
+                    p.terminate()
+                    self.send_slack_alert(f"Auto-Remediation Triggered: Terminated `{process_name}` (PID: `{pid}`)")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+
+    def ntfy_listener_loop(self, url):
+        while True:
+            try:
+                response = requests.get(f"{url}?poll=1", timeout=10)
+                if response.status_code == 200:
+                    events = response.json()
+                    # Process event payload here
             except Exception as e:
-                time.sleep(5.0)            
+                pass
+        time.sleep(5)
+
+    def handle_remote_command(self, cmd):
+      """Execute remote operational commands."""
+      logging.info(f"Executing command: {cmd}")
+      if cmd == "STATUS":
+        cpu = psutil.cpu_percent()
+        ram = psutil.virtual_memory().percent
+        status_msg = (
+            f"Sentinel_V2 Agent Online | CPU: {cpu}% | RAM: {ram}% | Active"
+        )
+        self.send_slack_alert(status_msg)
+        self.send_ntfy("STATUS", "Telemetry Heartbeat", status_msg, "bar_chart")
+      elif cmd == "REBOOT":
+        self.send_slack_alert("Sentinel_V2 Agent received reboot signal.")
+        self.send_ntfy(
+            "REBOOT", "Reboot Triggered", "System restart sequence initiated.", "warning"
+        )
+      elif cmd.startswith("KILL "):
+        target_proc = cmd.split(" ")[1]
+        self.terminate_process_by_name(target_proc)
+        kill_msg = f"Remote C2 Command Executed: Terminated `{target_proc}`"
+        self.send_slack_alert(kill_msg)
+        self.send_ntfy("STOP", "Process Terminated", kill_msg, "stop_sign")
+
+    def terminate_process_by_name(self, process_name):
+        """Automatically kill malicious processes on detection."""
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if proc.info['name'] and process_name.lower() in proc.info['name'].lower():
+                    pid = proc.info['pid']
+                    logging.warning(f"Auto-Remediation: Terminating malicious process {process_name} (PID: {pid})")
+                    p = psutil.Process(pid)
+                    p.terminate()
+                    self.send_slack_alert(f"Auto-Remediation Triggered: Terminated `{process_name}` (PID: `{pid}`)")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+
     def send_slack_alert(self, message):
         """sends telemetry alerts to your Slack workspace channel."""
         if not self.slack_webhook_url:
@@ -118,6 +167,19 @@ class SentinelV2Engine:
                 logging.error(f"Failed to send Slack alert: {response.status_code}")
         except Exception as e:
             logging.error(f"Slack webhook error: {e}")
+
+    def send_ntfy(self, topic, title, message, tags="shield"):
+      """Broadcasts telemetry or status alerts to ntfy topics."""
+      url = f"https://ntfy.sh/{topic}"
+      headers = {"Title": title, "Tags": tags}
+      try:
+        response = requests.post(
+            url, data=message.encode("utf-8"), headers=headers, timeout=5
+        )
+        if response.status_code != 200:
+          logging.error(f"Failed to send ntfy to {topic}: {response.status_code}")
+      except Exception as e:
+        logging.error(f"ntfy broadcast error: {e}")
 
     def calculate_shannon_entropy(self, file_path):
         """Calculates Shannon entropy of a file to detect potential ransomware encryption."""

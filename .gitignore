@@ -6,3 +6,10 @@ build/
 *.spec.bak
 config.json
 *.log
+
+*.zip
+*.exe
+SentinelShield_Release/
+Sentinel_Shield_v2.0.1/
+commercial_build/
+test_sandbox/

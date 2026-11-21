@@ -1,9 +1,12 @@
 @echo off
-:: Set the interactive terminal window title for the admin session context
-title Sentinel Security Interface
+TITLE Sentinel V2 Security Suite - Pilot Deployment
+echo [INFO] Initializing Sentinel_V2 All-In-One Security Node...
 
-:: Change the working directory context directly to the script's path locations
+:: Get the directory where this script is executed from
 cd /d "%~dp0"
 
-:: Initialize the natively silent background security worker process
-start sentinel_v2.exe
+:: Launch the unified all-in-one executable
+start "" "sentinel_all_in_one.exe"
+
+echo [SUCCESS] Sentinel_V2 Suite deployed and monitoring active for PILOT_NODE_01.
+exit
